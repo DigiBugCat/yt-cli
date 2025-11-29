@@ -26,6 +26,12 @@ cargo install --path .
 ```bash
 # Initialize with your AssemblyAI API key
 yt-cli init -k YOUR_API_KEY
+
+# Or set environment variable directly
+export ASSEMBLYAI_API_KEY=YOUR_API_KEY
+
+# Optionally customize data directory (default: ~/.yt-transcribe)
+export YT_TRANSCRIBE_DATA_DIR=/path/to/data
 ```
 
 ## Usage
