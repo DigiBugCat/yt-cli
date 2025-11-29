@@ -89,19 +89,19 @@ pub fn create_storage_path(platform: &str, channel: &str, video_id: &str) -> Res
     Ok(storage_path)
 }
 
-/// Save transcript in both text and JSON formats
+/// Save transcript in markdown and JSON formats
 pub fn save_transcript(
     storage_path: &Path,
-    text: &str,
+    markdown: &str,
     structured_data: &TranscriptData,
 ) -> Result<(PathBuf, PathBuf)> {
-    let text_path = storage_path.join("transcript.txt");
+    let md_path = storage_path.join("transcript.md");
     let json_path = storage_path.join("transcript.json");
 
-    fs::write(&text_path, text)?;
+    fs::write(&md_path, markdown)?;
     fs::write(&json_path, serde_json::to_string_pretty(structured_data)?)?;
 
-    Ok((text_path, json_path))
+    Ok((md_path, json_path))
 }
 
 /// Save video metadata as JSON
@@ -230,11 +230,15 @@ pub fn get_transcript(path: &str) -> Result<TranscriptContent> {
     let path = PathBuf::from(path);
 
     let (text_file, json_file) = if path.is_dir() {
-        (path.join("transcript.txt"), path.join("transcript.json"))
-    } else if path.extension().map(|e| e == "txt").unwrap_or(false) {
+        // Prefer .md, fallback to .txt
+        let md_file = path.join("transcript.md");
+        let txt_file = path.join("transcript.txt");
+        let text_file = if md_file.exists() { md_file } else { txt_file };
+        (text_file, path.join("transcript.json"))
+    } else if path.extension().map(|e| e == "md" || e == "txt").unwrap_or(false) {
         (path.clone(), path.with_extension("json"))
     } else {
-        (path.with_extension("txt"), path.clone())
+        (path.with_extension("md"), path.clone())
     };
 
     let mut result = TranscriptContent {

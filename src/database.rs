@@ -27,7 +27,8 @@ fn init_tables(conn: &Connection) -> Result<()> {
             path TEXT,
             speaker_count INTEGER,
             word_count INTEGER,
-            confidence REAL
+            confidence REAL,
+            chapters TEXT
         );
 
         -- Full-text search table
@@ -35,6 +36,7 @@ fn init_tables(conn: &Connection) -> Result<()> {
             title,
             channel,
             description,
+            chapters_text,
             transcript_text
         );
         "#,
@@ -68,6 +70,8 @@ pub struct TranscriptMetadata<'a> {
     pub speaker_count: i32,
     pub word_count: i32,
     pub confidence: Option<f64>,
+    pub chapters_json: Option<&'a str>,
+    pub chapters_text: &'a str,
     pub transcript_text: &'a str,
 }
 
@@ -80,26 +84,26 @@ pub fn add_transcript(meta: &TranscriptMetadata) -> Result<i64> {
         r#"
         INSERT OR REPLACE INTO transcripts
         (video_id, url, title, channel, channel_id, platform, duration, upload_date,
-         description, thumbnail, view_count, like_count, path, speaker_count, word_count, confidence)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+         description, thumbnail, view_count, like_count, path, speaker_count, word_count, confidence, chapters)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         "#,
         params![
             meta.video_id, meta.url, meta.title, meta.channel, meta.channel_id,
             meta.platform, meta.duration, meta.upload_date, meta.description,
             meta.thumbnail, meta.view_count, meta.like_count, meta.path,
-            meta.speaker_count, meta.word_count, meta.confidence
+            meta.speaker_count, meta.word_count, meta.confidence, meta.chapters_json
         ],
     )?;
 
     let transcript_id = conn.last_insert_rowid();
 
-    // Update FTS with transcript text
+    // Update FTS with transcript text and chapter headlines
     conn.execute(
         r#"
-        INSERT OR REPLACE INTO transcripts_fts(rowid, title, channel, description, transcript_text)
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        INSERT OR REPLACE INTO transcripts_fts(rowid, title, channel, description, chapters_text, transcript_text)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
-        params![transcript_id, meta.title, meta.channel, meta.description.unwrap_or(""), meta.transcript_text],
+        params![transcript_id, meta.title, meta.channel, meta.description.unwrap_or(""), meta.chapters_text, meta.transcript_text],
     )?;
 
     Ok(transcript_id)

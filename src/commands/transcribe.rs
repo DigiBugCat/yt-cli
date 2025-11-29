@@ -5,7 +5,7 @@ use crate::database::{add_transcript, TranscriptMetadata};
 use crate::downloader::download_audio;
 use crate::error::Result;
 use crate::storage::{create_storage_path, get_platform_from_url, move_audio_file, save_metadata, save_transcript};
-use crate::transcriber::{format_transcript, AssemblyAI};
+use crate::transcriber::{format_transcript_markdown, AssemblyAI};
 
 pub async fn run(url: &str) -> Result<()> {
     validate_config()?;
@@ -30,8 +30,8 @@ pub async fn run(url: &str) -> Result<()> {
 
     // Move audio and save files
     move_audio_file(&audio_file, &storage_path)?;
-    let formatted_text = format_transcript(&transcript_data);
-    save_transcript(&storage_path, &formatted_text, &transcript_data)?;
+    let markdown = format_transcript_markdown(&transcript_data);
+    save_transcript(&storage_path, &markdown, &transcript_data)?;
     save_metadata(&storage_path, &metadata)?;
 
     // Index in database with full metadata
@@ -42,6 +42,15 @@ pub async fn run(url: &str) -> Result<()> {
         .collect::<HashSet<_>>()
         .len() as i32;
     let word_count = transcript_data.text.split_whitespace().count() as i32;
+
+    // Serialize chapters for database storage
+    let chapters_json = serde_json::to_string(&transcript_data.chapters).ok();
+    let chapters_text: String = transcript_data
+        .chapters
+        .iter()
+        .map(|c| format!("{} {}", c.headline, c.summary))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     add_transcript(&TranscriptMetadata {
         video_id: &metadata.id,
@@ -60,6 +69,8 @@ pub async fn run(url: &str) -> Result<()> {
         speaker_count,
         word_count,
         confidence: transcript_data.confidence,
+        chapters_json: chapters_json.as_deref(),
+        chapters_text: &chapters_text,
         transcript_text: &transcript_data.text,
     })?;
     eprintln!("Indexed in database.");
@@ -68,6 +79,7 @@ pub async fn run(url: &str) -> Result<()> {
     let duration = transcript_data.audio_duration.unwrap_or(0);
     let mins = duration / 60;
     let secs = duration % 60;
+    let chapter_count = transcript_data.chapters.len();
 
     println!(
         r#"
@@ -80,6 +92,7 @@ Channel: {}
 Duration: {}m {}s
 Words: {}
 Speakers: {}
+Chapters: {}
 
 Preview (first 500 chars):
 {}{}"#,
@@ -91,6 +104,7 @@ Preview (first 500 chars):
         secs,
         word_count,
         speaker_count,
+        chapter_count,
         &transcript_data.text[..transcript_data.text.len().min(500)],
         if transcript_data.text.len() > 500 { "..." } else { "" }
     );

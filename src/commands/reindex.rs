@@ -129,6 +129,15 @@ fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
     let view_count = metadata.get("view_count").and_then(|v| v.as_i64());
     let like_count = metadata.get("like_count").and_then(|v| v.as_i64());
 
+    // Serialize chapters for database storage
+    let chapters_json = serde_json::to_string(&transcript_data.chapters).ok();
+    let chapters_text: String = transcript_data
+        .chapters
+        .iter()
+        .map(|c| format!("{} {}", c.headline, c.summary))
+        .collect::<Vec<_>>()
+        .join(" ");
+
     add_transcript(&TranscriptMetadata {
         video_id: &video_id,
         url: &url,
@@ -146,6 +155,8 @@ fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
         speaker_count,
         word_count,
         confidence: transcript_data.confidence,
+        chapters_json: chapters_json.as_deref(),
+        chapters_text: &chapters_text,
         transcript_text: text,
     })?;
 

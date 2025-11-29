@@ -29,6 +29,16 @@ pub struct Word {
     pub speaker: Option<String>,
 }
 
+/// Auto-generated chapter
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Chapter {
+    pub gist: String,
+    pub headline: String,
+    pub summary: String,
+    pub start: i64,
+    pub end: i64,
+}
+
 /// Full transcript data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptData {
@@ -36,6 +46,7 @@ pub struct TranscriptData {
     pub text: String,
     pub utterances: Vec<Utterance>,
     pub words: Vec<Word>,
+    pub chapters: Vec<Chapter>,
     pub confidence: Option<f64>,
     pub audio_duration: Option<i64>,
 }
@@ -51,6 +62,7 @@ struct TranscriptRequest {
     speaker_labels: bool,
     punctuate: bool,
     format_text: bool,
+    auto_chapters: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,9 +72,19 @@ struct TranscriptResponse {
     text: Option<String>,
     utterances: Option<Vec<ApiUtterance>>,
     words: Option<Vec<ApiWord>>,
+    chapters: Option<Vec<ApiChapter>>,
     confidence: Option<f64>,
     audio_duration: Option<i64>,
     error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiChapter {
+    gist: String,
+    headline: String,
+    summary: String,
+    start: i64,
+    end: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -133,6 +155,7 @@ impl AssemblyAI {
             speaker_labels: true,
             punctuate: true,
             format_text: true,
+            auto_chapters: true,
         };
 
         let response = self
@@ -205,11 +228,25 @@ impl AssemblyAI {
                         })
                         .collect();
 
+                    let chapters = transcript
+                        .chapters
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|c| Chapter {
+                            gist: c.gist,
+                            headline: c.headline,
+                            summary: c.summary,
+                            start: c.start,
+                            end: c.end,
+                        })
+                        .collect();
+
                     return Ok(TranscriptData {
                         id: transcript.id,
                         text: transcript.text.unwrap_or_default(),
                         utterances,
                         words,
+                        chapters,
                         confidence: transcript.confidence,
                         audio_duration: transcript.audio_duration,
                     });
@@ -240,44 +277,101 @@ impl AssemblyAI {
     }
 }
 
-/// Format transcript data as readable text with speaker labels
-pub fn format_transcript(data: &TranscriptData) -> String {
-    if data.utterances.is_empty() {
-        return data.text.clone();
-    }
-
-    data.utterances
-        .iter()
-        .map(|u| format!("Speaker {}: {}", u.speaker, u.text))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-/// Format timestamp from milliseconds to HH:MM:SS
+/// Format timestamp from milliseconds to MM:SS or HH:MM:SS
 pub fn format_timestamp(ms: i64) -> String {
     let seconds = ms / 1000;
     let minutes = seconds / 60;
     let hours = minutes / 60;
 
-    format!("{:02}:{:02}:{:02}", hours, minutes % 60, seconds % 60)
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, minutes % 60, seconds % 60)
+    } else {
+        format!("{:02}:{:02}", minutes, seconds % 60)
+    }
 }
 
-/// Format transcript with timestamps
-pub fn format_transcript_with_timestamps(data: &TranscriptData) -> String {
+/// Format transcript as markdown with chapters and speaker labels
+/// Batches consecutive utterances from the same speaker into paragraphs
+pub fn format_transcript_markdown(data: &TranscriptData) -> String {
+    let mut output = String::new();
+
+    // Add chapters section if available
+    if !data.chapters.is_empty() {
+        output.push_str("## Chapters\n\n");
+        for chapter in &data.chapters {
+            let timestamp = format_timestamp(chapter.start);
+            output.push_str(&format!("### [{}] {}\n\n", timestamp, chapter.headline));
+            output.push_str(&format!("{}\n\n", chapter.summary));
+        }
+        output.push_str("---\n\n");
+    }
+
+    // Add transcript section
+    output.push_str("## Transcript\n\n");
+
+    if data.utterances.is_empty() {
+        output.push_str(&data.text);
+        return output;
+    }
+
+    let mut result = Vec::new();
+    let mut current_speaker: Option<&str> = None;
+    let mut current_texts: Vec<&str> = Vec::new();
+    let mut paragraph_start: i64 = 0;
+
+    for utterance in &data.utterances {
+        if current_speaker == Some(&utterance.speaker) {
+            current_texts.push(&utterance.text);
+        } else {
+            if let Some(speaker) = current_speaker {
+                let timestamp = format_timestamp(paragraph_start);
+                let text = current_texts.join(" ");
+                result.push(format!("**Speaker {}** [{}]: {}", speaker, timestamp, text));
+            }
+            current_speaker = Some(&utterance.speaker);
+            current_texts = vec![&utterance.text];
+            paragraph_start = utterance.start;
+        }
+    }
+
+    if let Some(speaker) = current_speaker {
+        let timestamp = format_timestamp(paragraph_start);
+        let text = current_texts.join(" ");
+        result.push(format!("**Speaker {}** [{}]: {}", speaker, timestamp, text));
+    }
+
+    output.push_str(&result.join("\n\n"));
+    output
+}
+
+/// Format transcript data as plain text (no formatting)
+pub fn format_transcript(data: &TranscriptData) -> String {
     if data.utterances.is_empty() {
         return data.text.clone();
     }
 
-    data.utterances
-        .iter()
-        .map(|u| {
-            format!(
-                "[{}] Speaker {}: {}",
-                format_timestamp(u.start),
-                u.speaker,
-                u.text
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n")
+    // Same batching logic but simpler output
+    let mut result = Vec::new();
+    let mut current_speaker: Option<&str> = None;
+    let mut current_texts: Vec<&str> = Vec::new();
+
+    for utterance in &data.utterances {
+        if current_speaker == Some(&utterance.speaker) {
+            current_texts.push(&utterance.text);
+        } else {
+            if let Some(speaker) = current_speaker {
+                let text = current_texts.join(" ");
+                result.push(format!("Speaker {}: {}", speaker, text));
+            }
+            current_speaker = Some(&utterance.speaker);
+            current_texts = vec![&utterance.text];
+        }
+    }
+
+    if let Some(speaker) = current_speaker {
+        let text = current_texts.join(" ");
+        result.push(format!("Speaker {}: {}", speaker, text));
+    }
+
+    result.join("\n\n")
 }

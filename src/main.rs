@@ -67,6 +67,12 @@ enum Commands {
 
     /// Reindex all transcripts in the database
     Reindex,
+
+    /// Get transcript path for a video URL
+    Get {
+        /// Video URL
+        url: String,
+    },
 }
 
 #[tokio::main]
@@ -86,6 +92,7 @@ async fn main() {
         Commands::Stats => commands::stats::run(),
         Commands::Init { api_key, force } => commands::init::run(api_key, force),
         Commands::Reindex => commands::reindex::run(),
+        Commands::Get { url } => commands::get::run(&url),
     };
 
     if let Err(e) = result {
