@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::config::{ensure_directories, validate_config};
-use crate::database::add_transcript;
+use crate::database::{add_transcript, TranscriptMetadata};
 use crate::downloader::download_audio;
 use crate::error::Result;
 use crate::storage::{create_storage_path, get_platform_from_url, move_audio_file, save_metadata, save_transcript};
@@ -24,9 +24,9 @@ pub async fn run(url: &str) -> Result<()> {
     let transcript_data = assemblyai.transcribe(&audio_file).await?;
     eprintln!("Transcription complete!");
 
-    // Create storage path
+    // Create storage path using video ID
     let platform = get_platform_from_url(url);
-    let storage_path = create_storage_path(&platform, &metadata.channel, &metadata.title)?;
+    let storage_path = create_storage_path(&platform, &metadata.channel, &metadata.id)?;
 
     // Move audio and save files
     move_audio_file(&audio_file, &storage_path)?;
@@ -34,7 +34,7 @@ pub async fn run(url: &str) -> Result<()> {
     save_transcript(&storage_path, &formatted_text, &transcript_data)?;
     save_metadata(&storage_path, &metadata)?;
 
-    // Index in database
+    // Index in database with full metadata
     let speaker_count = transcript_data
         .utterances
         .iter()
@@ -43,19 +43,25 @@ pub async fn run(url: &str) -> Result<()> {
         .len() as i32;
     let word_count = transcript_data.text.split_whitespace().count() as i32;
 
-    add_transcript(
-        &metadata.id,
+    add_transcript(&TranscriptMetadata {
+        video_id: &metadata.id,
         url,
-        &metadata.title,
-        &metadata.channel,
-        &platform,
-        metadata.duration,
-        metadata.upload_date.as_deref(),
-        &storage_path.to_string_lossy(),
+        title: &metadata.title,
+        channel: &metadata.channel,
+        channel_id: metadata.uploader_id.as_deref(),
+        platform: &platform,
+        duration: metadata.duration,
+        upload_date: metadata.upload_date.as_deref(),
+        description: metadata.description.as_deref(),
+        thumbnail: metadata.thumbnail.as_deref(),
+        view_count: metadata.view_count,
+        like_count: metadata.like_count,
+        path: &storage_path.to_string_lossy(),
         speaker_count,
         word_count,
-        &transcript_data.text,
-    )?;
+        confidence: transcript_data.confidence,
+        transcript_text: &transcript_data.text,
+    })?;
     eprintln!("Indexed in database.");
 
     // Output result
@@ -68,6 +74,7 @@ pub async fn run(url: &str) -> Result<()> {
 Transcription complete!
 
 Path: {}
+Video ID: {}
 Title: {}
 Channel: {}
 Duration: {}m {}s
@@ -77,6 +84,7 @@ Speakers: {}
 Preview (first 500 chars):
 {}{}"#,
         storage_path.display(),
+        metadata.id,
         metadata.title,
         metadata.channel,
         mins,

@@ -77,11 +77,13 @@ pub fn get_platform_from_url(url: &str) -> String {
 }
 
 /// Create organized storage path for a video
-pub fn create_storage_path(platform: &str, channel: &str, title: &str) -> Result<PathBuf> {
+/// Structure: transcripts/{platform}/{channel_id}/{video_id}/
+pub fn create_storage_path(platform: &str, channel: &str, video_id: &str) -> Result<PathBuf> {
     let safe_channel = sanitize_filename(channel, 100);
-    let safe_title = sanitize_filename(title, 100);
+    // Video ID is already safe (alphanumeric), but sanitize just in case
+    let safe_video_id = sanitize_filename(video_id, 50);
 
-    let storage_path = transcripts_dir().join(platform).join(&safe_channel).join(&safe_title);
+    let storage_path = transcripts_dir().join(platform).join(&safe_channel).join(&safe_video_id);
     fs::create_dir_all(&storage_path)?;
 
     Ok(storage_path)

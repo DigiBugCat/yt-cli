@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::config::{ensure_directories, transcripts_dir};
-use crate::database::add_transcript;
+use crate::database::{add_transcript, TranscriptMetadata};
 use crate::error::Result;
 use crate::transcriber::TranscriptData;
 
@@ -92,6 +92,7 @@ fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .unwrap_or_else(|| "Unknown".to_string());
 
+    // Extract all metadata fields
     let video_id = metadata
         .get("id")
         .and_then(|v| v.as_str())
@@ -101,7 +102,8 @@ fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
     let url = metadata
         .get("url")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .map(String::from)
+        .unwrap_or_default();
 
     let title = metadata
         .get("title")
@@ -115,23 +117,37 @@ fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
         .map(String::from)
         .unwrap_or(channel);
 
+    let channel_id = metadata
+        .get("uploader_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
     let duration = metadata.get("duration").and_then(|v| v.as_i64());
+    let upload_date = metadata.get("upload_date").and_then(|v| v.as_str()).map(String::from);
+    let description = metadata.get("description").and_then(|v| v.as_str()).map(String::from);
+    let thumbnail = metadata.get("thumbnail").and_then(|v| v.as_str()).map(String::from);
+    let view_count = metadata.get("view_count").and_then(|v| v.as_i64());
+    let like_count = metadata.get("like_count").and_then(|v| v.as_i64());
 
-    let upload_date = metadata.get("upload_date").and_then(|v| v.as_str());
-
-    add_transcript(
-        &video_id,
-        url,
-        &title,
-        &channel_from_meta,
-        &platform,
+    add_transcript(&TranscriptMetadata {
+        video_id: &video_id,
+        url: &url,
+        title: &title,
+        channel: &channel_from_meta,
+        channel_id: channel_id.as_deref(),
+        platform: &platform,
         duration,
-        upload_date,
-        &video_dir.to_string_lossy(),
+        upload_date: upload_date.as_deref(),
+        description: description.as_deref(),
+        thumbnail: thumbnail.as_deref(),
+        view_count,
+        like_count,
+        path: &video_dir.to_string_lossy(),
         speaker_count,
         word_count,
-        text,
-    )?;
+        confidence: transcript_data.confidence,
+        transcript_text: text,
+    })?;
 
     Ok(())
 }

@@ -15,19 +15,26 @@ fn init_tables(conn: &Connection) -> Result<()> {
             url TEXT,
             title TEXT,
             channel TEXT,
+            channel_id TEXT,
             platform TEXT,
             duration INTEGER,
             upload_date TEXT,
+            description TEXT,
+            thumbnail TEXT,
+            view_count INTEGER,
+            like_count INTEGER,
             transcribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             path TEXT,
             speaker_count INTEGER,
-            word_count INTEGER
+            word_count INTEGER,
+            confidence REAL
         );
 
         -- Full-text search table
         CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
             title,
             channel,
+            description,
             transcript_text
         );
         "#,
@@ -43,31 +50,45 @@ pub fn get_connection() -> Result<Connection> {
     Ok(conn)
 }
 
+/// Metadata for adding a transcript
+pub struct TranscriptMetadata<'a> {
+    pub video_id: &'a str,
+    pub url: &'a str,
+    pub title: &'a str,
+    pub channel: &'a str,
+    pub channel_id: Option<&'a str>,
+    pub platform: &'a str,
+    pub duration: Option<i64>,
+    pub upload_date: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub thumbnail: Option<&'a str>,
+    pub view_count: Option<i64>,
+    pub like_count: Option<i64>,
+    pub path: &'a str,
+    pub speaker_count: i32,
+    pub word_count: i32,
+    pub confidence: Option<f64>,
+    pub transcript_text: &'a str,
+}
+
 /// Add a transcript to the database
-#[allow(clippy::too_many_arguments)]
-pub fn add_transcript(
-    video_id: &str,
-    url: &str,
-    title: &str,
-    channel: &str,
-    platform: &str,
-    duration: Option<i64>,
-    upload_date: Option<&str>,
-    path: &str,
-    speaker_count: i32,
-    word_count: i32,
-    transcript_text: &str,
-) -> Result<i64> {
+pub fn add_transcript(meta: &TranscriptMetadata) -> Result<i64> {
     let conn = get_connection()?;
 
     // Insert or replace the transcript
     conn.execute(
         r#"
         INSERT OR REPLACE INTO transcripts
-        (video_id, url, title, channel, platform, duration, upload_date, path, speaker_count, word_count)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        (video_id, url, title, channel, channel_id, platform, duration, upload_date,
+         description, thumbnail, view_count, like_count, path, speaker_count, word_count, confidence)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
         "#,
-        params![video_id, url, title, channel, platform, duration, upload_date, path, speaker_count, word_count],
+        params![
+            meta.video_id, meta.url, meta.title, meta.channel, meta.channel_id,
+            meta.platform, meta.duration, meta.upload_date, meta.description,
+            meta.thumbnail, meta.view_count, meta.like_count, meta.path,
+            meta.speaker_count, meta.word_count, meta.confidence
+        ],
     )?;
 
     let transcript_id = conn.last_insert_rowid();
@@ -75,10 +96,10 @@ pub fn add_transcript(
     // Update FTS with transcript text
     conn.execute(
         r#"
-        INSERT OR REPLACE INTO transcripts_fts(rowid, title, channel, transcript_text)
-        VALUES (?1, ?2, ?3, ?4)
+        INSERT OR REPLACE INTO transcripts_fts(rowid, title, channel, description, transcript_text)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
-        params![transcript_id, title, channel, transcript_text],
+        params![transcript_id, meta.title, meta.channel, meta.description.unwrap_or(""), meta.transcript_text],
     )?;
 
     Ok(transcript_id)
