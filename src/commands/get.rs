@@ -29,14 +29,11 @@ fn extract_video_id(url: &str) -> Option<String> {
     path.split('/').filter(|s| !s.is_empty()).last().map(String::from)
 }
 
-pub fn run(url: &str) -> Result<()> {
-    let video_id = extract_video_id(url)
-        .ok_or_else(|| Error::Config("Could not extract video ID from URL".to_string()))?;
-
+/// Try to find an existing transcript path for the given video ID
+fn find_transcript_path(url: &str, video_id: &str) -> Option<String> {
     // Check database for existing transcript
-    if let Some(record) = get_transcript_by_id(&video_id)? {
-        println!("{}", record.path);
-        return Ok(());
+    if let Ok(Some(record)) = get_transcript_by_id(video_id) {
+        return Some(record.path);
     }
 
     // Also try checking by constructing the expected path
@@ -46,12 +43,34 @@ pub fn run(url: &str) -> Result<()> {
     // Search for the video ID in the transcripts directory
     if let Ok(entries) = std::fs::read_dir(transcripts_dir.join(&platform)) {
         for channel_entry in entries.flatten() {
-            let video_path = channel_entry.path().join(&video_id);
+            let video_path = channel_entry.path().join(video_id);
             if video_path.join("transcript.md").exists() || video_path.join("transcript.txt").exists() {
-                println!("{}", video_path.display());
-                return Ok(());
+                return Some(video_path.display().to_string());
             }
         }
+    }
+
+    None
+}
+
+pub async fn run(url: &str) -> Result<()> {
+    let video_id = extract_video_id(url)
+        .ok_or_else(|| Error::Config("Could not extract video ID from URL".to_string()))?;
+
+    // Check if transcript already exists
+    if let Some(path) = find_transcript_path(url, &video_id) {
+        println!("{}", path);
+        return Ok(());
+    }
+
+    // Transcript not found - transcribe it
+    eprintln!("Transcript not found, transcribing...");
+    super::transcribe::run(url).await?;
+
+    // Now find the path
+    if let Some(path) = find_transcript_path(url, &video_id) {
+        println!("{}", path);
+        return Ok(());
     }
 
     Err(Error::FileNotFound(format!(

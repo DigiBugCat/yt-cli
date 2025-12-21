@@ -1,3 +1,4 @@
+pub mod channel;
 pub mod get;
 pub mod init;
 pub mod list;
@@ -6,3 +7,4 @@ pub mod reindex;
 pub mod search;
 pub mod stats;
 pub mod transcribe;
+pub mod yt_search;

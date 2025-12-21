@@ -15,6 +15,7 @@ fn init_tables(conn: &Connection) -> Result<()> {
             url TEXT,
             title TEXT,
             channel TEXT,
+            channel_handle TEXT,
             channel_id TEXT,
             platform TEXT,
             duration INTEGER,
@@ -27,8 +28,7 @@ fn init_tables(conn: &Connection) -> Result<()> {
             path TEXT,
             speaker_count INTEGER,
             word_count INTEGER,
-            confidence REAL,
-            chapters TEXT
+            confidence REAL
         );
 
         -- Full-text search table
@@ -36,11 +36,90 @@ fn init_tables(conn: &Connection) -> Result<()> {
             title,
             channel,
             description,
-            chapters_text,
             transcript_text
         );
         "#,
     )?;
+
+    // Migration: Remove chapters columns from existing databases
+    migrate_remove_chapters(conn)?;
+
+    // Migration: Add channel_handle column
+    migrate_add_channel_handle(conn)?;
+
+    Ok(())
+}
+
+/// Migration to remove chapters-related columns from existing databases
+fn migrate_remove_chapters(conn: &Connection) -> Result<()> {
+    // Check if 'chapters' column exists in transcripts table
+    let has_chapters_column: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('transcripts') WHERE name = 'chapters'")?
+        .exists([])?;
+
+    if has_chapters_column {
+        // SQLite doesn't support DROP COLUMN in older versions, so we recreate the table
+        conn.execute_batch(
+            r#"
+            -- Recreate transcripts table without chapters column
+            CREATE TABLE transcripts_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT UNIQUE,
+                url TEXT,
+                title TEXT,
+                channel TEXT,
+                channel_id TEXT,
+                platform TEXT,
+                duration INTEGER,
+                upload_date TEXT,
+                description TEXT,
+                thumbnail TEXT,
+                view_count INTEGER,
+                like_count INTEGER,
+                transcribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                path TEXT,
+                speaker_count INTEGER,
+                word_count INTEGER,
+                confidence REAL
+            );
+
+            INSERT INTO transcripts_new (id, video_id, url, title, channel, channel_id, platform,
+                duration, upload_date, description, thumbnail, view_count, like_count,
+                transcribed_at, path, speaker_count, word_count, confidence)
+            SELECT id, video_id, url, title, channel, channel_id, platform,
+                duration, upload_date, description, thumbnail, view_count, like_count,
+                transcribed_at, path, speaker_count, word_count, confidence
+            FROM transcripts;
+
+            DROP TABLE transcripts;
+            ALTER TABLE transcripts_new RENAME TO transcripts;
+
+            -- Recreate FTS table without chapters_text
+            DROP TABLE IF EXISTS transcripts_fts;
+            CREATE VIRTUAL TABLE transcripts_fts USING fts5(
+                title,
+                channel,
+                description,
+                transcript_text
+            );
+            "#,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Migration to add channel_handle column to existing databases
+fn migrate_add_channel_handle(conn: &Connection) -> Result<()> {
+    // Check if 'channel_handle' column exists
+    let has_channel_handle: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('transcripts') WHERE name = 'channel_handle'")?
+        .exists([])?;
+
+    if !has_channel_handle {
+        conn.execute("ALTER TABLE transcripts ADD COLUMN channel_handle TEXT", [])?;
+    }
+
     Ok(())
 }
 
@@ -58,6 +137,7 @@ pub struct TranscriptMetadata<'a> {
     pub url: &'a str,
     pub title: &'a str,
     pub channel: &'a str,
+    pub channel_handle: Option<&'a str>,
     pub channel_id: Option<&'a str>,
     pub platform: &'a str,
     pub duration: Option<i64>,
@@ -70,8 +150,6 @@ pub struct TranscriptMetadata<'a> {
     pub speaker_count: i32,
     pub word_count: i32,
     pub confidence: Option<f64>,
-    pub chapters_json: Option<&'a str>,
-    pub chapters_text: &'a str,
     pub transcript_text: &'a str,
 }
 
@@ -83,27 +161,27 @@ pub fn add_transcript(meta: &TranscriptMetadata) -> Result<i64> {
     conn.execute(
         r#"
         INSERT OR REPLACE INTO transcripts
-        (video_id, url, title, channel, channel_id, platform, duration, upload_date,
-         description, thumbnail, view_count, like_count, path, speaker_count, word_count, confidence, chapters)
+        (video_id, url, title, channel, channel_handle, channel_id, platform, duration, upload_date,
+         description, thumbnail, view_count, like_count, path, speaker_count, word_count, confidence)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         "#,
         params![
-            meta.video_id, meta.url, meta.title, meta.channel, meta.channel_id,
+            meta.video_id, meta.url, meta.title, meta.channel, meta.channel_handle, meta.channel_id,
             meta.platform, meta.duration, meta.upload_date, meta.description,
             meta.thumbnail, meta.view_count, meta.like_count, meta.path,
-            meta.speaker_count, meta.word_count, meta.confidence, meta.chapters_json
+            meta.speaker_count, meta.word_count, meta.confidence
         ],
     )?;
 
     let transcript_id = conn.last_insert_rowid();
 
-    // Update FTS with transcript text and chapter headlines
+    // Update FTS with transcript text
     conn.execute(
         r#"
-        INSERT OR REPLACE INTO transcripts_fts(rowid, title, channel, description, chapters_text, transcript_text)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        INSERT OR REPLACE INTO transcripts_fts(rowid, title, channel, description, transcript_text)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
-        params![transcript_id, meta.title, meta.channel, meta.description.unwrap_or(""), meta.chapters_text, meta.transcript_text],
+        params![transcript_id, meta.title, meta.channel, meta.description.unwrap_or(""), meta.transcript_text],
     )?;
 
     Ok(transcript_id)
@@ -174,6 +252,7 @@ pub struct TranscriptRecord {
     pub url: Option<String>,
     pub title: String,
     pub channel: String,
+    pub channel_handle: Option<String>,
     pub platform: String,
     pub duration: Option<i64>,
     pub upload_date: Option<String>,
@@ -186,11 +265,12 @@ pub struct TranscriptRecord {
 pub fn list_all_transcripts(
     platform: Option<&str>,
     channel: Option<&str>,
+    handle: Option<&str>,
     limit: i32,
 ) -> Result<Vec<TranscriptRecord>> {
     let conn = get_connection()?;
 
-    let mut query = "SELECT id, video_id, url, title, channel, platform, duration, upload_date, path, speaker_count, word_count FROM transcripts WHERE 1=1".to_string();
+    let mut query = "SELECT id, video_id, url, title, channel, channel_handle, platform, duration, upload_date, path, speaker_count, word_count FROM transcripts WHERE 1=1".to_string();
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(p) = platform {
@@ -201,6 +281,11 @@ pub fn list_all_transcripts(
     if let Some(c) = channel {
         query.push_str(" AND channel LIKE ?");
         params_vec.push(Box::new(format!("%{}%", c)));
+    }
+
+    if let Some(h) = handle {
+        query.push_str(" AND channel_handle LIKE ?");
+        params_vec.push(Box::new(format!("%{}%", h)));
     }
 
     query.push_str(" ORDER BY transcribed_at DESC LIMIT ?");
@@ -218,12 +303,13 @@ pub fn list_all_transcripts(
                 url: row.get(2)?,
                 title: row.get(3)?,
                 channel: row.get(4)?,
-                platform: row.get(5)?,
-                duration: row.get(6)?,
-                upload_date: row.get(7)?,
-                path: row.get(8)?,
-                speaker_count: row.get(9)?,
-                word_count: row.get(10)?,
+                channel_handle: row.get(5)?,
+                platform: row.get(6)?,
+                duration: row.get(7)?,
+                upload_date: row.get(8)?,
+                path: row.get(9)?,
+                speaker_count: row.get(10)?,
+                word_count: row.get(11)?,
             })
         })?
         .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -236,7 +322,7 @@ pub fn get_transcript_by_id(video_id: &str) -> Result<Option<TranscriptRecord>> 
     let conn = get_connection()?;
 
     let mut stmt = conn.prepare(
-        "SELECT id, video_id, url, title, channel, platform, duration, upload_date, path, speaker_count, word_count FROM transcripts WHERE video_id = ?",
+        "SELECT id, video_id, url, title, channel, channel_handle, platform, duration, upload_date, path, speaker_count, word_count FROM transcripts WHERE video_id = ?",
     )?;
 
     let mut rows = stmt.query(params![video_id])?;
@@ -248,12 +334,13 @@ pub fn get_transcript_by_id(video_id: &str) -> Result<Option<TranscriptRecord>> 
             url: row.get(2)?,
             title: row.get(3)?,
             channel: row.get(4)?,
-            platform: row.get(5)?,
-            duration: row.get(6)?,
-            upload_date: row.get(7)?,
-            path: row.get(8)?,
-            speaker_count: row.get(9)?,
-            word_count: row.get(10)?,
+            channel_handle: row.get(5)?,
+            platform: row.get(6)?,
+            duration: row.get(7)?,
+            upload_date: row.get(8)?,
+            path: row.get(9)?,
+            speaker_count: row.get(10)?,
+            word_count: row.get(11)?,
         }))
     } else {
         Ok(None)

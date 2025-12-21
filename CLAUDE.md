@@ -22,12 +22,12 @@ cargo clippy
 
 ## Architecture
 
-yt-cli is a Rust CLI tool that downloads videos using yt-dlp and transcribes them using AssemblyAI's API with speaker diarization and auto-chapters.
+yt-cli is a Rust CLI tool that downloads videos using yt-dlp and transcribes them using AssemblyAI's API with speaker diarization.
 
 ### Core Modules
 
 - **main.rs**: CLI entry point using clap with subcommands (transcribe, list, read, search, stats, init, reindex, get)
-- **transcriber.rs**: AssemblyAI client - uploads audio, polls for completion, returns structured transcript data with utterances, words, and chapters
+- **transcriber.rs**: AssemblyAI client - uploads audio, polls for completion, returns structured transcript data with utterances and words
 - **downloader.rs**: Wraps yt-dlp to extract metadata and download audio as MP3. Supports Firefox cookies for members-only content
 - **database.rs**: SQLite storage with FTS5 full-text search on transcript content
 - **storage.rs**: File organization at `~/.yt-transcribe/transcripts/{platform}/{channel}/{video_id}/`
@@ -36,7 +36,7 @@ yt-cli is a Rust CLI tool that downloads videos using yt-dlp and transcribes the
 ### Data Flow
 
 1. `transcribe` command: URL → yt-dlp (metadata + audio) → AssemblyAI upload → poll completion → save markdown/JSON + index in SQLite
-2. `search` command: FTS5 query on indexed transcript text, descriptions, and chapter headlines
+2. `search` command: FTS5 query on indexed transcript text and descriptions
 
 ### External Dependencies
 

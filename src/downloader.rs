@@ -6,6 +6,67 @@ use serde::{Deserialize, Serialize};
 use crate::config::{downloads_dir, ensure_directories, firefox_cookies_args};
 use crate::error::{Error, Result};
 
+/// Playlist entry from yt-dlp --flat-playlist
+/// Used for channel listings and YouTube search results
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlaylistEntry {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+    pub channel: Option<String>,
+    pub channel_id: Option<String>,
+    pub duration: Option<i64>,
+    pub view_count: Option<i64>,
+    pub upload_date: Option<String>,
+}
+
+/// Raw yt-dlp flat playlist entry (internal)
+#[derive(Debug, Deserialize)]
+struct YtDlpPlaylistEntry {
+    id: Option<String>,
+    title: Option<String>,
+    url: Option<String>,
+    channel: Option<String>,
+    channel_id: Option<String>,
+    uploader: Option<String>,
+    uploader_id: Option<String>,
+    // yt-dlp returns duration as float
+    duration: Option<f64>,
+    view_count: Option<i64>,
+    upload_date: Option<String>,
+    // Playlist metadata (used when channel/uploader are null)
+    playlist_uploader: Option<String>,
+    playlist_channel: Option<String>,
+    playlist_channel_id: Option<String>,
+}
+
+impl YtDlpPlaylistEntry {
+    fn into_playlist_entry(self) -> Option<PlaylistEntry> {
+        let id = self.id?;
+        let title = self.title.unwrap_or_else(|| "Untitled".to_string());
+
+        Some(PlaylistEntry {
+            id: id.clone(),
+            title,
+            url: self
+                .url
+                .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={}", id)),
+            channel: self
+                .channel
+                .or(self.uploader)
+                .or(self.playlist_channel)
+                .or(self.playlist_uploader),
+            channel_id: self
+                .channel_id
+                .or(self.uploader_id)
+                .or(self.playlist_channel_id),
+            duration: self.duration.map(|d| d as i64),
+            view_count: self.view_count,
+            upload_date: self.upload_date,
+        })
+    }
+}
+
 /// Video metadata extracted from yt-dlp
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VideoMetadata {
@@ -170,4 +231,79 @@ pub fn download_audio(url: &str) -> Result<(PathBuf, VideoMetadata)> {
         "Downloaded audio file not found for {}",
         url
     )))
+}
+
+/// Fetch video entries from a playlist URL (channel or search)
+/// Uses --flat-playlist to get metadata without downloading
+pub fn fetch_playlist_entries(url: &str, limit: usize) -> Result<Vec<PlaylistEntry>> {
+    let limit_str = limit.to_string();
+    let output = run_ytdlp(&[
+        "--dump-json",
+        "--flat-playlist",
+        "--playlist-end",
+        &limit_str,
+        "--no-warnings",
+        "--extractor-args",
+        "youtubetab:skip=authcheck",
+        url,
+    ])?;
+
+    let mut entries = Vec::new();
+
+    // yt-dlp outputs one JSON object per line
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<YtDlpPlaylistEntry>(line) {
+            Ok(raw_entry) => {
+                if let Some(entry) = raw_entry.into_playlist_entry() {
+                    entries.push(entry);
+                }
+            }
+            Err(_) => {
+                // Skip malformed entries, continue parsing
+                continue;
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+/// Fetch latest videos from a YouTube channel
+pub fn fetch_channel_videos(channel_url: &str, limit: usize) -> Result<Vec<PlaylistEntry>> {
+    let videos_url = normalize_channel_url(channel_url);
+    fetch_playlist_entries(&videos_url, limit)
+}
+
+/// Search YouTube for videos
+pub fn search_youtube(query: &str, limit: usize) -> Result<Vec<PlaylistEntry>> {
+    let search_url = format!("ytsearch{}:{}", limit, query);
+    fetch_playlist_entries(&search_url, limit)
+}
+
+/// Normalize channel URL to point to videos tab
+fn normalize_channel_url(url: &str) -> String {
+    let url = url.trim_end_matches('/');
+
+    // If already pointing to /videos, return as-is
+    if url.ends_with("/videos") {
+        return url.to_string();
+    }
+
+    // If it's a channel URL, append /videos
+    if url.contains("youtube.com/") {
+        return format!("{}/videos", url);
+    }
+
+    // Assume it's a channel handle if it starts with @
+    if url.starts_with('@') {
+        return format!("https://www.youtube.com/{}/videos", url);
+    }
+
+    // Assume it's a channel ID
+    format!("https://www.youtube.com/channel/{}/videos", url)
 }

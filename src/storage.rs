@@ -124,6 +124,7 @@ pub struct TranscriptInfo {
     pub path: String,
     pub title: String,
     pub channel: String,
+    pub channel_handle: Option<String>,
     pub platform: String,
     pub duration: Option<i64>,
     pub upload_date: Option<String>,
@@ -134,6 +135,7 @@ pub struct TranscriptInfo {
 pub fn list_transcripts(
     platform: Option<&str>,
     channel: Option<&str>,
+    handle: Option<&str>,
 ) -> Result<Vec<TranscriptInfo>> {
     let mut results = Vec::new();
     let base_dir = transcripts_dir();
@@ -142,13 +144,9 @@ pub fn list_transcripts(
         return Ok(results);
     }
 
-    // Determine search paths based on filters
+    // Determine search paths based on platform filter only
     let search_paths: Vec<PathBuf> = if let Some(p) = platform {
-        if let Some(c) = channel {
-            vec![base_dir.join(p).join(sanitize_filename(c, 100))]
-        } else {
-            vec![base_dir.join(p)]
-        }
+        vec![base_dir.join(p)]
     } else {
         vec![base_dir]
     };
@@ -159,6 +157,23 @@ pub fn list_transcripts(
         }
 
         find_transcripts_recursive(&search_path, &mut results)?;
+    }
+
+    // Filter by channel display name
+    if let Some(channel_filter) = channel {
+        let filter_lower = channel_filter.to_lowercase();
+        results.retain(|t| t.channel.to_lowercase().contains(&filter_lower));
+    }
+
+    // Filter by channel handle
+    if let Some(handle_filter) = handle {
+        let filter_lower = handle_filter.to_lowercase();
+        results.retain(|t| {
+            t.channel_handle
+                .as_ref()
+                .map(|h| h.to_lowercase().contains(&filter_lower))
+                .unwrap_or(false)
+        });
     }
 
     Ok(results)
@@ -181,6 +196,7 @@ fn find_transcripts_recursive(path: &Path, results: &mut Vec<TranscriptInfo>) ->
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Unknown".to_string()),
+            channel_handle: None,
             platform: path
                 .parent()
                 .and_then(|p| p.parent())
@@ -198,6 +214,11 @@ fn find_transcripts_recursive(path: &Path, results: &mut Vec<TranscriptInfo>) ->
                     info.duration = metadata.get("duration").and_then(|v| v.as_i64());
                     info.upload_date = metadata.get("upload_date").and_then(|v| v.as_str()).map(String::from);
                     info.url = metadata.get("url").and_then(|v| v.as_str()).map(String::from);
+                    info.channel_handle = metadata.get("uploader_id").and_then(|v| v.as_str()).map(String::from);
+                    // Also get channel name from metadata if available
+                    if let Some(channel_name) = metadata.get("channel").and_then(|v| v.as_str()) {
+                        info.channel = channel_name.to_string();
+                    }
                 }
             }
         }

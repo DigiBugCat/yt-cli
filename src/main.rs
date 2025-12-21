@@ -26,14 +26,18 @@ enum Commands {
         #[arg(short, long)]
         platform: Option<String>,
 
-        /// Filter by channel name
+        /// Filter by channel display name (e.g., "Infranomics")
         #[arg(short, long)]
         channel: Option<String>,
+
+        /// Filter by channel handle (e.g., "@EconomicsUnmasked")
+        #[arg(short = 'H', long)]
+        handle: Option<String>,
     },
 
     /// Read a transcript
     Read {
-        /// Path to transcript directory
+        /// Video ID or path to transcript directory
         path: String,
 
         /// Output as JSON with timestamps
@@ -73,6 +77,26 @@ enum Commands {
         /// Video URL
         url: String,
     },
+
+    /// List latest videos from a YouTube channel
+    Channel {
+        /// Channel URL (e.g., https://youtube.com/@CHANNEL or channel ID)
+        channel: String,
+
+        /// Maximum number of videos to show (default: 20)
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: usize,
+    },
+
+    /// Search YouTube for videos
+    YtSearch {
+        /// Search query
+        query: String,
+
+        /// Maximum number of results (default: 10)
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+    },
 }
 
 #[tokio::main]
@@ -84,15 +108,17 @@ async fn main() {
 
     let result = match cli.command {
         Commands::Transcribe { url } => commands::transcribe::run(&url).await,
-        Commands::List { platform, channel } => {
-            commands::list::run(platform.as_deref(), channel.as_deref())
+        Commands::List { platform, channel, handle } => {
+            commands::list::run(platform.as_deref(), channel.as_deref(), handle.as_deref())
         }
         Commands::Read { path, json } => commands::read::run(&path, json),
         Commands::Search { query, limit } => commands::search::run(&query, limit),
         Commands::Stats => commands::stats::run(),
         Commands::Init { api_key, force } => commands::init::run(api_key, force),
         Commands::Reindex => commands::reindex::run(),
-        Commands::Get { url } => commands::get::run(&url),
+        Commands::Get { url } => commands::get::run(&url).await,
+        Commands::Channel { channel, limit } => commands::channel::run(&channel, limit),
+        Commands::YtSearch { query, limit } => commands::yt_search::run(&query, limit),
     };
 
     if let Err(e) = result {

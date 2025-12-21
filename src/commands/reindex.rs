@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::{ensure_directories, transcripts_dir};
 use crate::database::{add_transcript, TranscriptMetadata};
@@ -18,25 +18,27 @@ pub fn run() -> Result<()> {
 
     let mut count = 0;
 
-    reindex_recursive(&transcripts_path, &mut count)?;
+    reindex_recursive(&transcripts_path, &mut count, true)?;
 
     println!("\nReindexed {} transcript(s).", count);
 
     Ok(())
 }
 
-fn reindex_recursive(path: &Path, count: &mut i32) -> Result<()> {
+fn reindex_recursive(path: &Path, count: &mut i32, verbose: bool) -> Result<()> {
     if !path.is_dir() {
         return Ok(());
     }
 
     let transcript_json = path.join("transcript.json");
     if transcript_json.exists() {
-        if let Err(e) = reindex_single(path, &transcript_json) {
+        if let Err(e) = index_video_dir(path) {
             eprintln!("Error indexing {}: {}", path.display(), e);
         } else {
             *count += 1;
-            println!("Indexed: {}", path.file_name().unwrap_or_default().to_string_lossy());
+            if verbose {
+                println!("Indexed: {}", path.file_name().unwrap_or_default().to_string_lossy());
+            }
         }
         return Ok(());
     }
@@ -45,7 +47,7 @@ fn reindex_recursive(path: &Path, count: &mut i32) -> Result<()> {
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
             if entry.path().is_dir() {
-                reindex_recursive(&entry.path(), count)?;
+                reindex_recursive(&entry.path(), count, verbose)?;
             }
         }
     }
@@ -53,11 +55,49 @@ fn reindex_recursive(path: &Path, count: &mut i32) -> Result<()> {
     Ok(())
 }
 
-fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
+/// Find a video directory by video ID on disk
+pub fn find_video_on_disk(video_id: &str) -> Option<PathBuf> {
+    let transcripts_path = transcripts_dir();
+    if !transcripts_path.exists() {
+        return None;
+    }
+    find_video_recursive(&transcripts_path, video_id)
+}
+
+fn find_video_recursive(path: &Path, video_id: &str) -> Option<PathBuf> {
+    if !path.is_dir() {
+        return None;
+    }
+
+    // Check if this directory matches the video ID
+    if path.file_name().map(|n| n.to_string_lossy()) == Some(video_id.into()) {
+        let transcript_json = path.join("transcript.json");
+        if transcript_json.exists() {
+            return Some(path.to_path_buf());
+        }
+    }
+
+    // Recurse into subdirectories
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            if entry.path().is_dir() {
+                if let Some(found) = find_video_recursive(&entry.path(), video_id) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Index a single video directory into the database
+pub fn index_video_dir(video_dir: &Path) -> Result<()> {
+    let transcript_json = video_dir.join("transcript.json");
     let metadata_file = video_dir.join("metadata.json");
 
     // Read transcript
-    let transcript_content = fs::read_to_string(transcript_json)?;
+    let transcript_content = fs::read_to_string(&transcript_json)?;
     let transcript_data: TranscriptData = serde_json::from_str(&transcript_content)?;
 
     // Read metadata if available
@@ -117,7 +157,7 @@ fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
         .map(String::from)
         .unwrap_or(channel);
 
-    let channel_id = metadata
+    let channel_handle = metadata
         .get("uploader_id")
         .and_then(|v| v.as_str())
         .map(String::from);
@@ -129,21 +169,13 @@ fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
     let view_count = metadata.get("view_count").and_then(|v| v.as_i64());
     let like_count = metadata.get("like_count").and_then(|v| v.as_i64());
 
-    // Serialize chapters for database storage
-    let chapters_json = serde_json::to_string(&transcript_data.chapters).ok();
-    let chapters_text: String = transcript_data
-        .chapters
-        .iter()
-        .map(|c| format!("{} {}", c.headline, c.summary))
-        .collect::<Vec<_>>()
-        .join(" ");
-
     add_transcript(&TranscriptMetadata {
         video_id: &video_id,
         url: &url,
         title: &title,
         channel: &channel_from_meta,
-        channel_id: channel_id.as_deref(),
+        channel_handle: channel_handle.as_deref(),
+        channel_id: None,
         platform: &platform,
         duration,
         upload_date: upload_date.as_deref(),
@@ -155,8 +187,6 @@ fn reindex_single(video_dir: &Path, transcript_json: &Path) -> Result<()> {
         speaker_count,
         word_count,
         confidence: transcript_data.confidence,
-        chapters_json: chapters_json.as_deref(),
-        chapters_text: &chapters_text,
         transcript_text: text,
     })?;
 

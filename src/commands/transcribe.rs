@@ -43,21 +43,13 @@ pub async fn run(url: &str) -> Result<()> {
         .len() as i32;
     let word_count = transcript_data.text.split_whitespace().count() as i32;
 
-    // Serialize chapters for database storage
-    let chapters_json = serde_json::to_string(&transcript_data.chapters).ok();
-    let chapters_text: String = transcript_data
-        .chapters
-        .iter()
-        .map(|c| format!("{} {}", c.headline, c.summary))
-        .collect::<Vec<_>>()
-        .join(" ");
-
     add_transcript(&TranscriptMetadata {
         video_id: &metadata.id,
         url,
         title: &metadata.title,
         channel: &metadata.channel,
-        channel_id: metadata.uploader_id.as_deref(),
+        channel_handle: metadata.uploader_id.as_deref(),
+        channel_id: None, // TODO: capture actual channel ID from yt-dlp
         platform: &platform,
         duration: metadata.duration,
         upload_date: metadata.upload_date.as_deref(),
@@ -69,8 +61,6 @@ pub async fn run(url: &str) -> Result<()> {
         speaker_count,
         word_count,
         confidence: transcript_data.confidence,
-        chapters_json: chapters_json.as_deref(),
-        chapters_text: &chapters_text,
         transcript_text: &transcript_data.text,
     })?;
     eprintln!("Indexed in database.");
@@ -79,7 +69,6 @@ pub async fn run(url: &str) -> Result<()> {
     let duration = transcript_data.audio_duration.unwrap_or(0);
     let mins = duration / 60;
     let secs = duration % 60;
-    let chapter_count = transcript_data.chapters.len();
 
     println!(
         r#"
@@ -92,7 +81,6 @@ Channel: {}
 Duration: {}m {}s
 Words: {}
 Speakers: {}
-Chapters: {}
 
 Preview (first 500 chars):
 {}{}"#,
@@ -104,7 +92,6 @@ Preview (first 500 chars):
         secs,
         word_count,
         speaker_count,
-        chapter_count,
         &transcript_data.text[..transcript_data.text.len().min(500)],
         if transcript_data.text.len() > 500 { "..." } else { "" }
     );
